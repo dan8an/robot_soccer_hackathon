@@ -1,64 +1,45 @@
-import time
+"""MATCH ENTRY POINT - autonomous soccer.
 
-from arduino.app_utils import App
-from robot_client import MiniAutoRobot
+This is what the board runs on boot. It starts DISARMED and waits for the CAM
+BOOT button, so powering on never makes the robot move by itself.
 
-robot = MiniAutoRobot()
+  Battery on -> app autostarts -> press CAM BOOT -> red/amber/green -> plays
+  Press CAM BOOT again -> stops
 
-print(f"health   : {robot.health()}")
-print(f"sensors  : {robot.read_sensors()}")
+To run a different mode without editing this file, set ROBOCUP_MODE before the
+app starts:
+  FIELD_SIDE_CHECK  confirm which wall colour means which goal (no motion)
+  VISION_ONLY       inference and telemetry, motors forced to zero
+  MOTORS_ON_BLOCKS  polarity check, wheels raised
+  MOTORS_RAMP       find the minimum speed that turns the wheels
 
-# Track the toggle so we only print when it actually changes.
-# Hold the CAM boot button for 5 seconds to switch teams.
-_last_toggle = robot.hold_toggle()
-print(f"[TEAM] active team: {'BLUE' if _last_toggle else 'RED'}  (hold CAM button 5 s to switch)")
+The original driver demo is preserved in demo_main.py.
+"""
+import os
+import runpy
 
+# FIELD_RUN is the match default. An explicit ROBOCUP_MODE still wins, so the
+# diagnostic modes remain reachable without touching this file.
+os.environ.setdefault("ROBOCUP_MODE", "FIELD_RUN")
 
-def drive(direction: str, speed: int = 150, ms: int = 500) -> None:
-    """Drive and wait for the move to finish before continuing."""
-    print(f"  {direction} speed={speed} ms={ms}")
-    robot.drive(direction, speed, ms)
-
-
-def loop() -> None:
-    global _last_toggle
-    current = robot.hold_toggle()
-    if current != _last_toggle:
-        _last_toggle = current
-        team = "BLUE" if current else "RED"
-        print(f"[TEAM] switched to: {team}")
-
-    # --- Move ---
-    drive("forward",      speed=150, ms=500)
-    drive("backward",     speed=150, ms=500)
-    drive("left",         speed=150, ms=500)   # strafe left
-    drive("right",        speed=150, ms=500)   # strafe right
-    drive("rotate_left",  speed=255, ms=3250)  # spin in place, 255 firmware cap on speed
-    time.sleep(0.5)
-    drive("rotate_right", speed=255, ms=3250)
-
-    robot.stop()
-    time.sleep(0.5)
-
-    # --- Sensors ---
-    sensors = robot.read_sensors()
-    print(f"ultrasonic : {sensors.get('ultrasonic_cm')} cm")
-    print(f"battery    : {sensors.get('battery_mv')} mV")
-    print(f"line       : {sensors.get('line_digital')}")
-
-    # --- Extras ---
-    robot.led(True)
-    robot.servo(90)
-    robot.servo(150)
-    robot.servo(30)
-    robot.servo(90)
-    robot.led(False)
-
-    robot.stop()
-
-
-print("[INFO] waiting for BOOT button to start...")
 try:
-    App.run(user_loop=lambda: robot.run_program(loop))
+    runpy.run_path(
+        os.path.join(os.path.dirname(__file__), "soccer_main.py"), run_name="__main__"
+    )
 finally:
-    robot.stop()
+    # soccer_main.py stops the motors in its own finally block. This is a
+    # second, independent net: if anything at all escapes - an import error, a
+    # failure inside runpy, an exception during its shutdown path - the wheels
+    # must still be commanded to zero. A robot that keeps driving after its
+    # controller has died is the worst failure this code can have.
+    #
+    # robot.stop() rather than a raw motor zero, because it also DISARMS the
+    # firmware. A crashed controller that leaves the program armed will start
+    # driving again the moment vision recovers.
+    try:
+        from robot_client import MiniAutoRobot
+
+        robot = MiniAutoRobot()
+        robot.stop()
+    except Exception:  # noqa: BLE001 - already failing; never mask the original
+        pass
